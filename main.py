@@ -2,12 +2,218 @@ import hashlib
 import argparse
 import hmac
 import secrets
+import os
+import time
+from pathlib import Path
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
+
 
 # Default values
 FILENAME = "secrets.txt"
+DIRECTORY = "data"
 BIT_SIZE = 128
 BYTE_SIZE = 16
 ITERATION = 10000
+
+class UserInterface:
+
+    def __init__(self): 
+        self.file_manager = FileManager()
+        self.choice = None
+
+
+    def menu(self):
+        self.choice = None
+        self.clear()
+        print(f"[1] Create a new file\n[2] Read a file\n[3] Append to a file\n[4] Delete a file\n[5] Quit")
+        self.choice = int(input(">>> "))
+        self.clear()
+
+        match (self.choice):
+
+            # Create a new file
+            case 1:
+                print("[q] to return")
+                file_name = input("Enter file name [q to return]: ")
+                
+                if (file_name != "q" and self.file_manager.create(file_name)):
+                    print("[*] File created!")
+                    time.sleep(1)
+
+                self.menu()
+
+            # Read a file
+            case 2:
+                if (self.file_manager.list_files()):
+                    self.choice = int(input(">>> "))
+                    self.file_manager.read(self.choice)
+                    self.choice = input("[q] to return ")
+
+                else:
+                    print("[-] No files found!")
+                    time.sleep(1)
+
+                self.menu()
+
+            # Append to a file
+            case 3:
+                if (self.file_manager.list_files()):
+                    self.choice = int(input(">>> "))
+                    self.clear()
+                    self.file_manager.write(self.choice)
+
+                else:
+                    print("[-] No files found!")
+                    time.sleep(1)
+
+                self.menu()
+
+            # Delete a file
+            case 4:
+                if (self.file_manager.list_files()):
+                    print("[0] to return")
+                    self.choice = int(input(">>> "))
+
+                    if (self.choice == 0):
+                        self.menu()
+
+                    if (not(self.file_manager.delete(self.choice))):
+                        self.menu()
+
+                    print("[*] File Deleted!")
+
+                else:
+                    print("[-] No Files found")
+                    time.sleep(1)
+
+                self.menu()
+
+            case _:
+                return
+
+    # Clear the terminal
+    def clear(self) -> None:
+        print("\033[H\033[2J", end="")
+
+
+class File:
+
+    def __init__(self, name: str, cl: int) -> None:
+
+        self._name = name
+        self._cl = cl
+        self._path = Path(DIRECTORY + "/" + self._name)
+
+    # Create a new file
+    def create(self,) -> bool:
+
+        try:
+            open(self._path, 'x')
+            return True
+
+        except FileExistsError as e:
+            print(f"[!] File Error: {e}")
+
+        return False
+
+    # Reads the file
+    def read(self) -> None:
+
+        try:
+            with open(self._path, 'r') as file:
+                print(file.read())
+
+        except FileNotFoundError as e:
+            print(f"[!] File Error: {e}")
+
+    def write(self) -> None:
+
+        with open(self._path, "a") as file:
+            data = input("[q to finish] >>> ")
+
+            while (data != "q"):
+                file.write(data + "\n")
+                data = input("[q to finish] >>> ")
+
+            print("[*] File saved!") 
+
+        time.sleep(1)
+
+
+    # Delets the file
+    def delete(self) -> None:
+
+        try:
+            os.remove(self._path)
+
+        except Exception as e:
+            print(f"[!] Error: {e}")
+
+class FileManager:
+
+    # Keeps tracks of all the files
+    stored_files = []
+
+    def __init__(self):
+        self._path = Path(DIRECTORY)
+
+        if (self._path.exists()):
+
+            # Loads all the files into the stored_files array
+            for file in self._path.iterdir():
+                new_file = File(file.name, 0)
+                self.stored_files.append(new_file)
+        else:
+            self._path.mkdir(exist_ok=True)
+
+    # Creates the file
+    def create(self, file_name: str, cl: int = 0) -> bool:
+        new_file = File(file_name, cl)
+
+        if (new_file.create()):
+            self.stored_files.append(new_file)
+            return True 
+        
+        return False
+
+    # Read a file
+    def read(self, file: int) -> None:
+        self.stored_files[file-1].read()
+
+    # Write to a file
+    def write(self, file: int) -> None:
+        self.stored_files[file-1].write()
+
+    # Deletes the file
+    def delete(self, file: int) -> bool:
+        try:
+            self.stored_files[file-1].delete()
+            self.stored_files.pop(file-1)
+            return True
+        
+        except Exception as e:
+            print(f"[!] Error: {e}")
+            return False
+
+    # Prints out all the files in a list format
+    def list_files(self) -> bool:
+        if (len(self.stored_files) == 0):
+            return False
+        
+        for idx, file in enumerate(self.stored_files):
+            print(f"[{idx+1}] {file._name}")
+
+        return True
+
+    def gen_key() -> bytes:
+        pass
+
+    def encrypt_doc() -> bytes:
+        pass
+
+    def decrypt_doc() -> bytes:
+        pass
 
 class Authenticator:
 
@@ -77,10 +283,12 @@ class Authenticator:
                         iter = int(iter)
 
                         return (salt, _hash, iter)
-                    
-        except Exception as e:
-            print("[!] Error retriving data: {e}")
 
+        except Exception as e:
+            print(f"[!] Error: {e}")
+            return False
+
+        print("[!] User doesn't exist!")
         return False
 
 
@@ -103,23 +311,25 @@ class Authenticator:
 
 
     # Authentication
-    def login(self, user: str,  password: str) -> bool:
+    def login(self, user: str,  password: str) -> None:
+
+        ui = UserInterface()
+
         data = self.read(user)
 
         if (data):
             passwd_hash = self.hash_passwd(password, data[0], data[2])
-            print(passwd_hash)
 
             success = self.verify(passwd_hash, data[1])
 
             if (not(success)):
                 print("[!] Authentication Failed!")
-                return False
+                return
 
             print("[*] Authentication Successful!")
-            return True
 
-        return False
+        time.sleep(1)
+        ui.menu()
 
 
 def main(args):
