@@ -356,11 +356,11 @@ class Authenticator:
         
         except Exception as e:
             print(f"[!] Error generating salt: {e}")
-            print("[*] Shuting down!")
+            print("[*] Shutting down!")
 
         sys.exit(1)
 
-    # Geenerates a hash
+    # Generates a hash
     @staticmethod
     def hash_passwd(password: bytes, salt: bytes, iter: int = d_iteration, req_size: int = d_byte_size) -> hex:
 
