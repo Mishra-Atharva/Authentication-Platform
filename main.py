@@ -30,10 +30,10 @@ class User:
     # Returns the user's details in a specific format
     def __str__(self):
         return f"{self.name}|{self.salt.hex()}|{self.passwd_hash}|{self.iterations}|{self.clearance_level}\n"
-        
+
 class File:
 
-    meta_data: Path = os.getenv("META_DATA")
+    meta_data: Path = Path(os.getenv("META_DATA"))
 
     def __init__(self, p_name: str, p_clearance_level: int) -> None:
 
@@ -42,15 +42,17 @@ class File:
         self.path = Path(os.getenv("DIRECTORY") + "/" + self.name)
 
     # Create a new file
-    def create(self) -> bool:
+    def create(self, key: bytes) -> bool:
 
         try:
             # Create file
-            open(self.path, 'x')
+            blob = FileManager.encrypt_doc(key, b"")
+            with open(self.path, 'xb') as file:
+                file.write(blob)
 
             # Add file meta data
             with open(self.meta_data, "a") as file:
-                file.write(f"{self.name}|{self.clearance_level}")
+                file.write(f"{self.name}|{self.clearance_level}\n")
 
             return True
 
@@ -60,26 +62,43 @@ class File:
         return False
 
     # Reads the file
-    def read(self) -> None:
+    def read(self, key: bytes) -> None:
 
         try:
-            with open(self.path, 'r') as file:
-                print(file.read())
+            with open(self.path, 'rb') as file:
+                blob = file.read()
+                plaintext = FileManager.decrypt_doc(key, blob).decode("utf-8")
+                print()
+                print(plaintext)
 
         except FileNotFoundError as e:
             print(f"[!] File Error: {e}")
 
-    def write(self) -> None:
+        except ValueError as e:
+            print(f"[!] Value Error: {e}")
 
-        with open(self.path, "a") as file:
-            data = input("[q to finish] >>> ")
+        except Exception as e:
+            print(f"[!] Error: {e}")
 
-            while (data != "q"):
-                file.write(data + "\n")
-                data = input("[q to finish] >>> ")
+    # Write to the file
+    def write(self, key: bytes) -> None:
 
-            print("[*] File saved!") 
+        with open(self.path, "rb") as file:
+            existing_data = file.read()
 
+        plaintext = FileManager.decrypt_doc(key, existing_data)
+
+        data = input("[q] to finish] >>> ")
+
+        while (data != "q"):
+            plaintext += (data + "\n").encode("utf-8")
+            data = input("[q] to finish] >>> ")
+
+        blob = FileManager.encrypt_doc(key, plaintext)
+        with open(self.path, "wb") as file:
+            file.write(blob)
+
+        print("[*] File saved!") 
         time.sleep(1)
 
     # Delets the file
@@ -88,6 +107,19 @@ class File:
         try:
             os.remove(self.path)
 
+            meta_list = []
+
+            with open(File.meta_data, "r") as file:
+                for line in file:
+                    name, cl = line.strip().split("|")
+
+                    if name != self.name:
+                        meta_list.append([name, cl])
+
+            with open(File.meta_data, "w") as file:
+                for line in meta_list:
+                    file.write(f"{line[0]}|{line[1]}\n")
+        
         except Exception as e:
             print(f"[!] Error: {e}")
 
@@ -98,25 +130,35 @@ class FileManager:
 
     # Initalizing
     def __init__(self, p_key: bytes):
+        self.clearance_level = Authenticator.user.clearance_level
         self.key: bytes = p_key
         self._path = Path(os.getenv("DIRECTORY"))
+
+        meta_data = {}
+
+        # Get all the meta data (name and clearance level)
+        if (File.meta_data.exists()):
+            with open(File.meta_data, "r") as file:
+                for line in file:
+                    name, cl = line.strip().split("|")
+                    meta_data[name] = int(cl)
 
         # Checking if the folder exists
         if (self._path.exists()):
 
             # Loads all the files into the stored_files array
             for file in self._path.iterdir():
-                new_file = File(file.name, 0)
+                new_file = File(file.name, meta_data.get(file.name, 0))
                 self.stored_files.append(new_file)
 
         else:
             self._path.mkdir(exist_ok=True)
 
     # Creates the file
-    def create(self, file_name: str, cl: int = 0) -> bool:
-        new_file = File(file_name, cl)
+    def create(self, file_name: str) -> bool:
+        new_file = File(file_name, self.clearance_level)
 
-        if (new_file.create()):
+        if (new_file.create(self.key)):
             self.stored_files.append(new_file)
             return True 
         
@@ -124,11 +166,22 @@ class FileManager:
 
     # Read a file
     def read(self, file: int) -> None:
-        self.stored_files[file-1].read()
+        target_file: File = self.stored_files[file-1]
+
+        if (self.clearance_level < 0 or self.clearance_level >= target_file.clearance_level):
+            target_file.read(self.key)
+        else:
+            print("[!] Privilege Violation: can't read this file!")
 
     # Write to a file
     def write(self, file: int) -> None:
-        self.stored_files[file-1].write()
+        target_file = self.stored_files[file-1]
+
+        if (self.clearance_level < 0 or self.clearance_level <= target_file.clearance_level):
+            target_file.write(self.key)
+        else:
+            print("[!] Privilege Violation: can't write to this file!")
+            time.sleep(1)
 
     # Deletes the file
     def delete(self, file: int) -> bool:
@@ -151,26 +204,54 @@ class FileManager:
 
         return True
 
+    @staticmethod
     # Encrypt a file
-    def encrypt_doc(self, plaintext: bytes) -> bytes:
+    def encrypt_doc(key: bytes, plaintext: bytes) -> bytes:
+
+        # 16 byte Initialization Vector
         iv = os.urandom(16)
+
+        # Fixed size 128 bit blocks
         padder = PKCS7(128).padder()
+
+        # Plaintext must be padded out to a multiple of the block size before encryption
         padded = padder.update(plaintext) + padder.finalize()
-        cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
+
+        # Setting up AES Cipher in CBC mode using the Key and the Initalization Vector
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+
+        # Encrypting
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(padded) + encryptor.finalize()
+
+        # Generating a SHA-256 hash to check for integrity
         doc_hash = hashlib.sha256(ciphertext).digest()
+
+        # Returns Initialization Vector, Encrypted text and SHA-256 hash together
         return iv + doc_hash + ciphertext
 
+    @staticmethod
     # Decrypt a file
-    def decrypt_doc(self, blob: bytes) -> bytes:
+    def decrypt_doc(key: bytes, blob: bytes) -> bytes:
+
+        # Extracting the Initialization Vector, SHA-256 Hash, and the Encrypted text
         iv, stored_hash, ciphertext = blob[:16], blob[16:48], blob[48:]
+
+        # Comparing the hash to see if the file has been tampered with
         if not hmac.compare_digest(hashlib.sha256(ciphertext).digest(), stored_hash):
             raise ValueError("Integrity check failed - file may have be tampered with")
-        cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
+
+        # Setting up AES Cipher 
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+
+        # Decrypting the encrypted text
         decryptor = cipher.decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()
+
+        # Removing the padding to recover the original text
         unpadder = PKCS7(128).unpadder()
+
+        # Returning the plaintext bytes
         return unpadder.update(padded) + unpadder.finalize() 
 
 class Authenticator:
@@ -257,8 +338,12 @@ class Authenticator:
 
         _user.set_clearance_level(level)
 
+        data = ""
+
         for s_user in Authenticator.users_list:
-            Authenticator.save(s_user, Authenticator.database, "w")
+            data += s_user.__str__()
+
+        Authenticator.save(data, Authenticator.database, "w")
 
         print("[*] Clearance Level Updated!")
 
@@ -395,6 +480,7 @@ class UserInterface:
         self.file_manager = FileManager(p_key)
         self.choice = None
 
+    # Menu for the master user
     def dev_menu(self) -> None:
         self.clear()
         print(f"[1] Create a new file\n[2] Read a file\n[3] Append to a file\n[4] Delete a file\n[5] Set clearance level\n[6] Quit")
@@ -428,7 +514,7 @@ class UserInterface:
                 length = Authenticator.list_users()
 
                 choice = int(input(">>> "))
-                while (choice > length or choice < length):
+                while (choice < 1 or choice > length):
                     choice = int(input(">>> "))
 
                 self.clear()
@@ -491,6 +577,7 @@ class UserInterface:
     def read(self) -> None:
         if (self.file_manager.list_files()):
             self.choice = int(input(">>> "))
+            self.clear()
             self.file_manager.read(self.choice)
             self.choice = input("[q] to return ")
 
